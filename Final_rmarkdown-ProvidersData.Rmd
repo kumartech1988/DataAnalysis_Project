@@ -1,0 +1,428 @@
+---
+title: "Analysis of Providers Data"
+author: "Rahul Kumar"
+date: "August 1, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r echo=FALSE, message=FALSE,warning = FALSE }
+library("dplyr")
+library("lubridate")
+library(readr)
+#library("tidyverse")
+
+#------------------------------------------------------------------------------------------
+# Read Patient Appointment  file from Meditech DR
+#------------------------------------------------------------------------------------------
+
+appointment_data <- read_tsv("C:\\Users\\RKUMA2\\Documents\\MY_R\\Patients_Appointment_data_All_Facilities.txt", col_names = TRUE,col_types = cols(.default = "c"))
+
+#View(appointment_data)
+
+#------------------------------------------------------------------------------------------
+# Prep data, bring to click datetime level and calculate duration. 
+#------------------------------------------------------------------------------------------
+DefaultDate1 = ymd_hms("2099-12-31 00:00:00")
+
+Patient_sorted_data <- appointment_data %>% select(DateTime,PatientID) %>%
+  mutate(DateTimeCt = ymd_hms(DateTime)) %>%
+  select(-DateTime) %>%
+  distinct() %>%
+  #group_by(PatientID,DateTimeCt) %>%
+  # distinct() %>%
+  group_by(PatientID) %>%
+  arrange(DateTimeCt) %>%
+  mutate(NextDateTimeCt = if_else(is.na(lead(DateTimeCt)),DefaultDate1,lead(DateTimeCt) ),
+         FirstApptForPatDateTimeCt = min(DateTimeCt)) %>%
+  arrange(PatientID,DateTimeCt)
+#View(Patient_sorted_data)
+
+
+
+
+#------------------------------------------------------------------------------------------
+# Click Data
+#------------------------------------------------------------------------------------------
+
+library("dplyr")
+library("lubridate")
+library("readr")
+#library("tidyverse")
+
+#------------------------------------------------------------------------------------------
+# Read person clicks file from Meditech DR
+#------------------------------------------------------------------------------------------
+
+click_data <- read_tsv("C:\\Users\\RKUMA2\\Documents\\MY_R\\All_Facilities_click_data.txt", col_names = TRUE,col_types = cols(.default = "c"))
+
+#View(click_data)
+
+
+#------------------------------------------------------------------------------------------
+# Prep data, bring to click datatime level and calculate duration. 
+#------------------------------------------------------------------------------------------
+
+newclick_data <- click_data %>% select(DateTime,ScreenArea,FacilityID,Person_UnvUserID,PatientID) %>%
+  mutate(DateTimeCt = ymd_hms(DateTime)) %>%
+  select(-DateTime) %>%
+  distinct() %>%
+  group_by(FacilityID,Person_UnvUserID,PatientID,DateTimeCt) %>%
+  arrange(ScreenArea) %>%
+  mutate(ScreenAreaList = paste0(ScreenArea, collapse = ", ")) %>%
+  select(-ScreenArea) %>%
+  distinct() %>%
+  group_by(FacilityID,Person_UnvUserID) %>%
+  arrange(DateTimeCt) %>%
+  mutate(DurationMinutesRaw = as.numeric(difftime(lead(DateTimeCt),DateTimeCt,units="mins")),
+         DurationMinutes = if_else(DurationMinutesRaw > 10 | is.na(DurationMinutesRaw),2,DurationMinutesRaw),
+         PrevDateTimeCt = lead(DateTimeCt))  %>%
+  arrange(Person_UnvUserID,DateTimeCt)
+#View(newclick_data)
+
+
+#------------------------------------------------------------------------------------------
+# Filter out NAs and calculate working hours. 
+#------------------------------------------------------------------------------------------
+
+dfPerson_ScrArea_WorkHrs = newclick_data %>%
+  filter(!is.na(DurationMinutes)) %>%
+  mutate(HourOfDay = hour(DateTimeCt),
+         WorkingHours = if_else(HourOfDay %in% 7:17,"NormalHrs","OffHrs")) 
+
+#View(dfPerson_ScrArea_WorkHrs)
+
+
+#-----------------------------------------------------------------------------------------
+# Work Hour stats
+#-----------------------------------------------------------------------------------------
+
+dfPerson_WorkHrs_Stats = dfPerson_ScrArea_WorkHrs %>%
+  group_by(Person_UnvUserID,WorkingHours) %>%
+  summarise(meanDur = mean(DurationMinutes,na.rm = TRUE),
+            maxDur = max(DurationMinutes,na.rm = TRUE),
+            minDur = min(DurationMinutes,na.rm = TRUE),
+            sumDur = sum(DurationMinutes,na.rm = TRUE))
+
+#View(dfPerson_WorkHrs_Stats)
+
+
+#------------------------------------------------------------------------------------------
+# Summarize Screen Area Stats 
+#------------------------------------------------------------------------------------------
+
+dfScrArea_Stats = dfPerson_ScrArea_WorkHrs %>%
+  group_by(ScreenAreaList) %>%
+  summarise(meanDur = mean(DurationMinutes,na.rm = TRUE),
+            maxDur = max(DurationMinutes,na.rm = TRUE),
+            minDur = min(DurationMinutes,na.rm = TRUE),
+            sumDur = sum(DurationMinutes,na.rm = TRUE)) %>%
+  ungroup()%>%
+  arrange(desc(sumDur))%>%
+  top_n(10)
+
+#View(dfScrArea_Stats)
+
+```
+
+ Data containing Date and Time of appointments for all Patients in 7 facilities  i.e  
+
+1)A.AFP - Hancock Family Med-Boyd.  
+2)A.FFP - Hancock Family Med-Clearview.  
+3)A.HFP - Hancock Family Med-McKenzie.  
+4)A.KHC - Knightstown Health Clinic.  
+5)A.NGR - Hancock Internal Med-Memorial.    
+6)A.NMC - Hancock Internal Med-Clearview.  
+7)A.NPFM- Hancock Family Med-New Pal.    
+is considered for the months of June and July i.e 2018-05-01 to 2018-07-01.
+
+Then the audit data related to click by various providers on various screens for different patients is analysed.
+
+Duration is calculated by looking at the time between clicks - Where click time was more than 10 mins that calculated duration is set to 2 mins.
+
+ 
+7:00 am to 5:59 pm is considered as Normal Hours and other as Off hours for Providers.
+
+By analysing timings of click we derived how much each provider is working Off Hours and Normal Hours.    
+  
+Initial data used for analysis:    
+
+
+```{r echo=FALSE, message=FALSE,warning = FALSE}
+library(knitr)
+library(kableExtra)
+
+newclick_data %>% ungroup() %>% filter(row_number() <= 2) %>% kable() %>% kable_styling()  
+  
+  
+
+#------------------------------------------------------------------------------------------
+# Visualizing Working Hour Stats for Providers 
+#------------------------------------------------------------------------------------------ 
+options(scipen = 999)
+library(ggplot2)
+Work_hour_stats <- ggplot(dfPerson_WorkHrs_Stats, aes(x= WorkingHours,y=sumDur, fill=WorkingHours)) + 
+  geom_bar(stat = "identity",position = position_dodge(), color="black") + 
+  ggtitle("Working Hour stats for different providers") + theme_bw()+
+  labs(y = "Total Duration")+
+  
+  facet_wrap(~Person_UnvUserID ) 
+plot(Work_hour_stats)
+```
+
+<br>
+<br>
+<br>
+
+####Summary of Screen Area Statistics by analysing the time spent by Providers on different screens.  
+  
+<br>
+<br>
+<br>    
+    
+
+  
+    
+  
+```{r echo=FALSE, message=FALSE,warning = FALSE}
+
+#------------------------------------------------------------------------------------------
+# Visualizing Screen Area Stats  
+#------------------------------------------------------------------------------------------ 
+options(scipen = 999)
+library(ggplot2)
+ScrArea_stats <- ggplot(dfScrArea_Stats, aes(x= reorder(ScreenAreaList,-sumDur),y = sumDur)) +
+  geom_bar(stat ="identity",position = "identity",color = "red")+
+  # geom_text(aes(label = sumDur),size = 3, position = position_stack(vjust = 0.5)) +
+  ggtitle("Screen Area Stats For Top 10 Screens")+
+  labs(x="Screen_Areas",y="Sum_of_duration in mins") + 
+  theme(axis.text.x  = element_text(angle=75,hjust=0.8,vjust=0.8),axis.title.y = element_text(angle = 0))
+#facet_wrap(ScreenAreaList ~ sumDur)  
+plot(ScrArea_stats)
+
+
+
+#------------------------------------------------------------------------------------------
+#Joining 
+#------------------------------------------------------------------------------------------ 
+
+
+library(dplyr)
+library(lubridate)
+
+
+#---------------------------------------------------------------------------------
+# Joining Data from ScreenArea stats(click_data) and Patient Appointment data
+#---------------------------------------------------------------------------------
+#Joined_data <- merge(x = click_data, y = Patient_sorted_data, by = "PatientID",all.x = TRUE)
+#Joined_data
+
+Joined_data <- newclick_data %>% left_join(Patient_sorted_data, by = "PatientID") %>%
+  rename(ScrClickDateTimeCt = DateTimeCt.x, ApptDateTimeCt = DateTimeCt.y,
+         NextApptDateTimeCt = NextDateTimeCt ) %>%
+  select(-PrevDateTimeCt)
+
+
+#---------------------------------------------------------------------------------
+#Filtering the rows where Click Datetime is b/w Appointment Datetime window
+#---------------------------------------------------------------------------------
+Joined_data_filtered = Joined_data %>%
+  #select(PatientID,Person_UnvUserID,DateTime,ScreenArea) %>%
+  filter((ScrClickDateTimeCt >= ApptDateTimeCt & ScrClickDateTimeCt < NextApptDateTimeCt ) |
+           is.na(ApptDateTimeCt) |
+           ScrClickDateTimeCt < FirstApptForPatDateTimeCt ) %>%
+  arrange(Person_UnvUserID,PatientID,ScrClickDateTimeCt)
+#View(Joined_data_filtered)
+
+
+#---------------------------------------------------------------------------------
+# Calculate days diff between Clicks and Appt Date
+#---------------------------------------------------------------------------------
+
+
+Clicks_In_Relation_To_Appts = Joined_data_filtered %>%
+  mutate(ApptDate = as.Date(ApptDateTimeCt) ,
+         ScrClickDate = as.Date(ScrClickDateTimeCt), 
+         ApptToClickDays = as.numeric(difftime(ScrClickDate,ApptDate,units="days")),
+         ApptToClickDaysBins  = cut(ApptToClickDays, breaks = c(-1,0,1,2,3,4,5,15,25,35,45,55,65,75,85,95,999)) ,
+         sameday_to_FourthDay = cut(ApptToClickDays, breaks = c(-1,0,1,2,3,4)),
+         First_Five_Days = cut(ApptToClickDays, breaks = c(1,2,3,4,5)),
+         Two_to_25 = cut(ApptToClickDays, breaks = c(2,3,4,5,15,25)),
+         Fifth_to_55 = cut(ApptToClickDays, breaks = c(5,15,25,35,45,55))
+         
+  ) %>%
+  mutate(Facility_ProviderID = paste(FacilityID,Person_UnvUserID, sep = ' - ') )
+
+
+
+#---------------------------------------------------------------------------------
+#Handling NA's 
+#---------------------------------------------------------------------------------
+
+Clicks_WithOut_NA =  Clicks_In_Relation_To_Appts %>%
+  filter(!is.na(ApptToClickDaysBins))
+
+#Clicks_WithOut_NA
+
+```
+<br>
+<br>
+<br>
+
+####Patient Appointment Data:  
+
+```{r echo=FALSE, message=FALSE,warning = FALSE}
+Patient_sorted_data %>% ungroup() %>% filter(row_number() <= 5) %>% kable() %>% kable_styling()
+
+
+```
+<br>
+<br>
+Then the Click data of Providers is joined with this Appointment data of Patients as both had Patient ID in common.
+
+
+Then the difference between the click by Provider and the Appointment days is calculated, to see gap between the appointment day and the Click by the Provider.  
+
+So we created bins for time gaps.  
+
+For example: (0,1] means just day 1   
+(35,45] means day 36 to 45.
+
+###Plot of Clicks vs the Days difference is :
+
+
+
+
+
+```{r echo=FALSE, message=FALSE,warning = FALSE}
+
+#---------------------------------------------------------------------------------
+# Plotting Number Of Clicks vs ApptToClickDaysBins
+#--------------------------------------------------------------------------------- 
+
+library(ggplot2)
+Clicks_stats <- ggplot(Clicks_WithOut_NA,aes(x = ApptToClickDaysBins ))  +
+  geom_bar(stat ="count", color="black") +
+  labs(y = "Nbr of Clicks") +
+  ggtitle("Screen Area Click Stats In Relation to Appt") + theme_bw()
+
+Clicks_stats
+```
+<br>
+<br>
+<br>
+
+
+
+
+
+```{r echo=FALSE, message=FALSE,warning = FALSE}
+
+#Clicks_stats1 <- Clicks_WithOut_NA %>% filter(!is.na(sameday_to_FourthDay)) %>% 
+#  ggplot(aes(x = sameday_to_FourthDay ))  +
+#  geom_bar(stat ="count", color="black")  +
+#  labs(y = "Nbr of Clicks") +
+#  ggtitle("Screen Area Click Stats In Relation to Apptday to 4th day") + theme_bw()
+
+#Clicks_stats1
+
+dfScrArea_Stats = Clicks_WithOut_NA %>%
+  filter(!is.na(First_Five_Days)) %>%
+  #filter(ApptToClickDays %in% c(3,4,5) ) %>%
+  group_by(ScreenAreaList) %>%
+  summarise(sumDur = sum(DurationMinutes,na.rm = TRUE)) %>%
+  ungroup()%>%
+  arrange(desc(sumDur))%>%
+  top_n(10)
+
+ScrArea_stats <- ggplot(dfScrArea_Stats, aes(x= reorder(ScreenAreaList,-sumDur),y = sumDur)) +
+  geom_bar(stat ="identity",position = "identity",color = "red")+
+  # geom_text(aes(label = sumDur),size = 3, position = position_stack(vjust = 0.5)) +
+  ggtitle("Screen Area Stats For Top 10 Screens of 1st to 5th day")+
+  labs(x="Screen_Areas",y="Sum_of_duration in mins") + 
+  theme(axis.text.x  = element_text(angle=75,hjust=0.8,vjust=0.8),axis.title.y = element_text(angle = 0))
+#facet_wrap(ScreenAreaList ~ sumDur)  
+plot(ScrArea_stats)
+
+
+dfScrArea_Stats = Clicks_WithOut_NA %>%
+  filter(!is.na(Two_to_25 )) %>%
+  group_by(ScreenAreaList) %>%
+  summarise(sumDur = sum(DurationMinutes,na.rm = TRUE)) %>%
+  ungroup()%>%
+  arrange(desc(sumDur))%>%
+  top_n(10)
+
+ScrArea_stats <- ggplot(dfScrArea_Stats, aes(x= reorder(ScreenAreaList,-sumDur),y = sumDur)) +
+  geom_bar(stat ="identity",position = "identity",color = "red")+
+  ggtitle("Screen Area Stats For Top 10 Screens of 2nd to 55th day")+
+  labs(x="Screen_Areas",y="Sum_of_duration in mins") + 
+  theme(axis.text.x  = element_text(angle=75,hjust=0.8,vjust=0.8),axis.title.y = element_text(angle = 0))
+ 
+plot(ScrArea_stats)
+
+
+dfScrArea_Stats = Clicks_WithOut_NA %>%
+  filter(!is.na(Fifth_to_55  )) %>%
+  group_by(ScreenAreaList) %>%
+  summarise(sumDur = sum(DurationMinutes,na.rm = TRUE)) %>%
+  ungroup()%>%
+  arrange(desc(sumDur))%>%
+  top_n(10)
+
+ScrArea_stats <- ggplot(dfScrArea_Stats, aes(x= reorder(ScreenAreaList,-sumDur),y = sumDur)) +
+  geom_bar(stat ="identity",position = "identity",color = "red")+
+  ggtitle("Screen Area Stats For Top 10 Screens of 5th to 55th day")+
+  labs(x="Screen_Areas",y="Sum_of_duration in mins") + 
+  theme(axis.text.x  = element_text(angle=75,hjust=0.8,vjust=0.8),axis.title.y = element_text(angle = 0))
+ 
+plot(ScrArea_stats)
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```
+
+
+####Plots of Clicks vs the Days difference for Individual Providers :
+
+
+
+
+
+```{r echo=FALSE, message=FALSE,warning = FALSE}
+
+
+#---------------------------------------------------------------------------------
+# Plotting for each provider
+#--------------------------------------------------------------------------------- 
+library("ggplot2")
+library("ggforce")
+for(n in seq_len(17)){
+print(Clicks_stats +
+  facet_wrap_paginate(~Facility_ProviderID,ncol = 1,nrow = 2, scales = "fixed", shrink = TRUE,
+                    labeller = "label_value", as.table = TRUE, switch = NULL, drop = TRUE, dir = "h",
+                    strip.position = "top",page = n )
+  )}
+
+```
+
